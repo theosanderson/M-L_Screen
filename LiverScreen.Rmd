@@ -21,7 +21,7 @@ library(zoo)
 
 
 loadAndCollapse<- function(file){
-  counts<-read.csv(here(file), header=T,stringsAsFactors=FALSE)
+  counts<-read.csv(here(paste0("Data/",file)), header=T,stringsAsFactors=FALSE)
   counts<- counts[counts$barcode!="no_match",]
   fcounts<- as.matrix (counts [grep("\\.1$",names(counts))] ) #forward
   rcounts<- as.matrix (counts [grep("\\.2$",names(counts))] ) #reverse
@@ -35,9 +35,8 @@ loadAndCollapse<- function(file){
   return(alltcounts)
 }
 metadata<-read_csv(here("SampleAssignments.csv"))
-metadata %>% filter(Pool=="L", Mouse==3, Condition=="Rec")
 files<-unique(paste0(metadata$Run,".csv"))
-#files<-c("PbSTM93.csv","PbSTM94.csv","PbSTM95.csv","PbSTM96.csv","PbSTM102b.csv","PbSTM103.csv","counts_21532.csv","21132.csv","21162.csv","20536.csv","20569.csv","22878.csv","counts_23317.csv","counts_23330.csv","counts_23245.csv")
+
 
 
 dfs<-lapply(files,loadAndCollapse)
@@ -121,10 +120,11 @@ ggplot(variance,aes(x=val1,y=val2,color=Condition))+
   theme(axis.title=element_blank(),
         axis.text=element_blank(),
         axis.ticks=element_blank())
+ggsave("output/corplot.pdf",width=10,height=15)
 ```
 
 ```{r, eval=F}
-ggsave("repeat.pdf",width=10,height=15)
+
   pairwiseCor <- function(dataframe){
   pairs <- combn(names(dataframe), 2, simplify=FALSE)
   df <- data.frame(Vairable1=rep(0,length(pairs)), Variable2=rep(0,length(pairs)), 
