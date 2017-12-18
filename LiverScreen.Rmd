@@ -49,6 +49,7 @@ bigdf$file<-NULL
 bigdf$Description<-NULL
 bigdf$Mouse=as.factor(bigdf$Mouse)
 
+bigdf%>% group_by(Pool,Condition,Mouse) %>% summarise(n=n()) %>% filter(n!=2& Condition %in% c("Rec","Passage","MG","SG"))
 ```
 This, and some code not shown, sets up the starting point in which we have a data frame containing raw barcode counts from all the experiments with data about the pool, condition (=SG,MG, etc.), the mouse and the technical replicate.
 ```{r}
@@ -173,9 +174,11 @@ Looking at this some of the samples are clearly iffy, so we will exclude them:
 ```
 ```{r}
 ggsave("repeat.pdf",width=10,height=15)
-variance<-filter(variance, !(Pool=="H" & Mouse==3))
-variance<-filter(variance, !(Pool=="L" & Mouse==3))
-variance<-filter(variance, !(Pool=="U" | Pool=="V"))
+#variance<-filter(variance, !(Pool=="H" & Mouse==3))
+#variance<-filter(variance, !(Pool=="L" & Mouse==3))
+#variance<-filter(variance, !(Pool=="U" | Pool=="V"))
+variance<-filter(variance, !(Pool=="W" & Mouse==3))
+variance<-filter(variance, !(Pool=="Y" & Mouse==3))
 ```
 
 So we know that different samples have different measurement precisions. How do we model the precision with which an individual measurement is made?  We have estimates from the standard deviations, calculated from the duplicate PCRs. But these standard deviations are not very accurate measurements of the true precision. They are calculated from only TWO values. Those two values might be very similar by pure chance, indicating high precision wrongly.  But we can use the standard deviations from measurements with similar abundances in the same sample to average out this random noise. That is what we do in the next section. We take a "rolling median" across 11 values, after ordering each sample by abundance. Then we enforce monotonicity.
@@ -315,14 +318,44 @@ comparisonmerge<- comparisonmerge %>% mutate(power=ifelse(diffmin>-1,"notreduced
 ```
 Let's make a few different versions of the data
 ```{r}
+bloodStageNormalise <- function(df){
+recipient<-filter(df,Condition=="Rec")
+
+bloodstage<-read.csv("Barseq20170714.csv")
+recmerge<-inner_join(recipient,bloodstage)
+recmerge<-mutate(recmerge,blood=log2(Relative.Growth.Rate),bloodvar=(sqrt(variance)/(Relative.Growth.Rate*log(2)))^2)
+recmerge <- mutate(recmerge,difference=difference-3*blood,differencesd=sqrt(differencesd^2+3^2*bloodvar))
+recmerge<- recmerge %>% mutate(diffmax=difference+2*differencesd)
+recmerge<- recmerge %>% mutate(diffmin=difference-2*differencesd)
+recmerge<- recmerge %>% mutate(power=ifelse(diffmin>-1,"notreduced",ifelse(diffmax<(-1),"reduced","nopower")))
+return(recmerge)
+}
 
 unnormalised=comparison %>% bloodStageNormalise() %>% mergeMultiples() %>% mutate(version="unnormalised")
 normalisedControls=comparison  %>% normaliseWithRedundantControls() %>% mergeMultiples() %>% mutate(version="withcontrols") %>% bloodStageNormalise()
-normalisedQuarter=comparison %>% bloodStageNormalise() %>% normaliseWithMostAbundantQuarter() %>% mergeMultiples() %>% mutate(version="withabundant") %>% bloodStageNormalise()
+normalisedQuarter=comparison  %>% filter(Condition=="Rec")%>% normaliseWithMostAbundantQuarter() %>% mergeMultiples() %>% mutate(version="withabundant") 
 normalisedWithFive=comparison %>% bloodStageNormalise() %>% normaliseWithMostAbundant5() %>% mergeMultiples() %>% mutate(version="mostabundant5") 
 normalisedWithTwenty=comparison %>% bloodStageNormalise() %>% normaliseWithMostAbundant20() %>% mergeMultiples() %>% mutate(version="mostabundant20") 
-```
 
+unnormalisedatall=comparison %>% filter(Condition=="Rec") %>% mergeMultiples()
+justnormalisedQuarter=comparison %>% filter(Condition=="Rec") %>% mergeMultiples()
+roc1<-rocAnalysis(comparison %>% filter(Condition=="Rec") %>%bloodStageNormalise() %>% mergeMultiples())
+roc2<-rocAnalysis(comparison %>% filter(Condition=="Rec") %>% mergeMultiples())
+```
+```{r}
+roc<-read_csv("roc.csv",col_names=F)
+library(ROCR)
+
+rocAnalysis<-function(df){
+  merge<-inner_join(df,roc,by=c("gene"="X1"))
+  merge$diffB=merge$difference+merge$differencesd
+  pred=prediction(-merge$difference,merge$X3)
+  perf<-performance(pred,"prec",x.measure="rec")
+  plot(perf)
+  
+}
+
+rocAnalysis(unnormalisedatall)
 ```{r}
 write_csv(normalisedWithTwenty,"normalisedWith20.csv")
 
@@ -416,18 +449,9 @@ merge<-inner_join(inputdata,NewInput)
 filter(merge, proportion<0.001)
 ```
 ```{r}
-bloodStageNormalise <- function(df){
-recipient<-filter(df,Condition=="Rec")
 
-bloodstage<-read.csv("Barseq20170714.csv")
-recmerge<-inner_join(recipient,bloodstage)
-recmerge<-mutate(recmerge,blood=log2(Relative.Growth.Rate),bloodvar=(sqrt(variance)/(Relative.Growth.Rate*log(2)))^2)
-recmerge <- mutate(recmerge,difference=difference-3*blood,differencesd=sqrt(differencesd^2+3^2*bloodvar))
-recmerge<- recmerge %>% mutate(diffmax=difference+2*differencesd)
-recmerge<- recmerge %>% mutate(diffmin=difference-2*differencesd)
-recmerge<- recmerge %>% mutate(power=ifelse(diffmin>-1,"notreduced",ifelse(diffmax<(-1),"reduced","nopower")))
-return(recmerge)
-}
+```
+```
 old<-recmerge
 new<-recmerge
 c2<- inner_join(old,new,suffixes=c("x","y"),by="gene")
