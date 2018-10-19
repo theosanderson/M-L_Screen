@@ -18,7 +18,7 @@ library(here)
 library(tidyverse)
 library(reshape2)
 library(zoo)
-
+setwd("/Users/theo/Dropbox/Sanger/mosquitostagescreen")
 
 loadAndCollapse<- function(file){
   counts<-read.csv(here(paste0("Data/",file)), header=T,stringsAsFactors=FALSE)
@@ -49,7 +49,7 @@ bigdf$file<-NULL
 bigdf$Description<-NULL
 bigdf$Mouse=as.factor(bigdf$Mouse)
 
-bigdf%>% group_by(Pool,Condition,Mouse) %>% summarise(n=n()) %>% filter(n!=2& Condition %in% c("Rec","Passage","MG","SG"))
+#bigdf%>% group_by(Pool,Condition,Mouse) %>% summarise(n=n()) %>% filter(n!=2& Condition %in% c("Rec","Passage","MG","SG"))
 ```
 This, and some code not shown, sets up the starting point in which we have a data frame containing raw barcode counts from all the experiments with data about the pool, condition (=SG,MG, etc.), the mouse and the technical replicate.
 ```{r}
@@ -64,7 +64,7 @@ inputdata<-narrow %>% filter(Condition=="Input")
 narrow <- narrow %>% filter(Condition %in% c("Passage","MG","SG","Rec"))
 ```
 Lets plot how many barcodes we have for each sample to see if everything makes sense:
-```{r}
+```{r,fig.height=30}
 totals<-narrow%>% group_by(Pool,Condition,Mouse,Replicate,Run)%>% summarise(sum=sum(value))
 ggplot(totals,aes(x=paste(Pool,Condition,Mouse,Replicate),fill=Pool,y=sum))+geom_bar(stat="identity")+facet_wrap(~Run,scales="free",ncol=3) +theme_bw()+ theme(axis.text.x = element_text(angle = 90, hjust = 1,size=2))
 ```
@@ -115,7 +115,7 @@ variance<-narrow %>% group_by(Pool,Condition,Mouse,gene) %>% summarise(sd=sd(log
 
 ```{r} 
 cors<-variance %>% group_by(Condition,Mouse,Pool) %>% summarise( cor=cor(val1,val2),n=n())
-ggplot(variance,aes(x=val1,y=val2,color=Condition))+
+ggplot(variance,aes(x=val1,y=val2,color=Condition,group=Condition))+
   geom_rect(data=cors,xmin= -50,xmax=50,ymin= -50,ymax=50,aes(fill=-cor,x=0,y=0))+
   geom_point(alpha=0.4,size=0.1)+facet_grid(Pool~Condition+Mouse)+scale_fill_distiller(palette="Greys")+theme( panel.background = element_rect(fill="white")) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+scale_color_brewer(palette="Set1")+
   theme(axis.title=element_blank(),
@@ -177,8 +177,8 @@ ggsave("repeat.pdf",width=10,height=15)
 #variance<-filter(variance, !(Pool=="H" & Mouse==3))
 #variance<-filter(variance, !(Pool=="L" & Mouse==3))
 #variance<-filter(variance, !(Pool=="U" | Pool=="V"))
-variance<-filter(variance, !(Pool=="W" & Mouse==3))
-variance<-filter(variance, !(Pool=="Y" & Mouse==3))
+#variance<-filter(variance, !(Pool=="W" & Mouse==3))
+#variance<-filter(variance, !(Pool=="Y" & Mouse==3))
 ```
 
 So we know that different samples have different measurement precisions. How do we model the precision with which an individual measurement is made?  We have estimates from the standard deviations, calculated from the duplicate PCRs. But these standard deviations are not very accurate measurements of the true precision. They are calculated from only TWO values. Those two values might be very similar by pure chance, indicating high precision wrongly.  But we can use the standard deviations from measurements with similar abundances in the same sample to average out this random noise. That is what we do in the next section. We take a "rolling median" across 11 values, after ordering each sample by abundance. Then we enforce monotonicity.
@@ -245,6 +245,11 @@ gaussianMeanAndVarianceSplit<- function(vals, variances,return){
     return(var)
   }
 }
+```
+
+
+```{r}
+
 ```
 There are a few possible ways to normalise.
 ```{r, eval=T}
@@ -314,7 +319,9 @@ comparisonmerge<- comparisonmerge %>% mutate(diffmin=difference-2*differencesd)
 comparisonmerge<- comparisonmerge %>% mutate(power=ifelse(diffmin>-1,"notreduced",ifelse(diffmax<(-1),"reduced","nopower")))
  }
 
-
+unnormalised=comparison  %>% filter(Condition=="Rec")
+basic<-mergeMultiples(unnormalised)
+write_csv(basic,"unnormalised.csv")
 ```
 Let's make a few different versions of the data
 ```{r}
@@ -338,24 +345,72 @@ normalisedWithFive=comparison %>% bloodStageNormalise() %>% normaliseWithMostAbu
 normalisedWithTwenty=comparison %>% bloodStageNormalise() %>% normaliseWithMostAbundant20() %>% mergeMultiples() %>% mutate(version="mostabundant20") 
 
 unnormalisedatall=comparison %>% filter(Condition=="Rec") %>% mergeMultiples()
-justnormalisedQuarter=comparison %>% filter(Condition=="Rec") %>% mergeMultiples()
+justnormalisedQuarter=comparison %>% filter(Condition=="Rec") %>% normaliseWithMostAbundantQuarter()%>% mergeMultiples()
 roc1<-rocAnalysis(comparison %>% filter(Condition=="Rec") %>%bloodStageNormalise() %>% mergeMultiples())
 roc2<-rocAnalysis(comparison %>% filter(Condition=="Rec") %>% mergeMultiples())
 ```
 ```{r}
-roc<-read_csv("roc.csv",col_names=F)
+roc<-read_csv("roc.csv")
+roc$measure=roc$JustInjection
+roc<-roc %>% filter(!is.na(measure))
 library(ROCR)
 
-rocAnalysis<-function(df){
-  merge<-inner_join(df,roc,by=c("gene"="X1"))
+rocAnalysis<-function(df,name=NULL){
+  df<-filter(df,Pool!="Pilot")
+  merge<-inner_join(df,roc,by=c("gene"="Old"))
   merge$diffB=merge$difference+merge$differencesd
-  pred=prediction(-merge$difference,merge$X3)
+  pred=prediction(-merge$difference,merge$measure)
   perf<-performance(pred,"prec",x.measure="rec")
   plot(perf)
   
+  df=tibble(recall=unlist(perf@x.values),  precision=unlist(perf@y.values),cutoff=unlist(perf@alpha.values))
+  df$name=name
+  return(df)
 }
 
-rocAnalysis(unnormalisedatall)
+a1<-rocAnalysis(normalisedQuarter,"normalisedQuarter")
+a2<-rocAnalysis(justnormalisedQuarter,"justnormalisedQuarter")
+a3<-rocAnalysis(normalisedQuarter,"normalisedQuarter")
+a4<-rocAnalysis(normalisedControls,"normalisedControls")
+a5<-rocAnalysis(unnormalisedatall,"unnormalisedatall")
+a<-bind_rows(a1,a2,a3,a4,a5)
+ggplot(filter(a),aes(y=precision,x=recall,color=name,group=name))+geom_line()
+
+final<-normalisedQuarter %>% mutate(hit=difference< -2)
+filter(final,hit==TRUE) %>% group_by(Pool) %>% summarise(n=n())
+```
+
+```{r}
+roc<-read_csv("roc.csv")
+roc$measure=roc$JustInjection
+roc<-roc %>% filter(!is.na(measure))
+library(ROCR)
+
+rocAnalysis<-function(df,name=NULL){
+  df<-filter(df,Pool!="Pilot")
+  merge<-inner_join(df,roc,by=c("gene"="Old"))
+  merge$diffB=merge$difference+merge$differencesd
+  pred=prediction(-merge$diffmax,merge$measure)
+  perf<-performance(pred,"prec",x.measure="rec")
+  plot(perf)
+  
+  df=tibble(recall=unlist(perf@x.values),  precision=unlist(perf@y.values),cutoff=unlist(perf@alpha.values))
+  df$name=name
+  return(df)
+}
+
+a1<-rocAnalysis(normalisedQuarter,"normalisedQuarter")
+a2<-rocAnalysis(justnormalisedQuarter,"justnormalisedQuarter")
+a3<-rocAnalysis(normalisedQuarter,"normalisedQuarter")
+a4<-rocAnalysis(normalisedControls,"normalisedControls")
+a5<-rocAnalysis(unnormalisedatall,"unnormalisedatall")
+a<-bind_rows(a1,a2,a3,a4,a5)
+ggplot(filter(a),aes(y=precision,x=recall,color=name,group=name))+geom_line()
+
+final<-normalisedQuarter %>% mutate(hit=difference< -2)
+filter(final,hit==TRUE) %>% group_by(Pool) %>% summarise(n=n())
+```
+
 ```{r}
 write_csv(normalisedWithTwenty,"normalisedWith20.csv")
 
