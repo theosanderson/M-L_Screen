@@ -118,202 +118,132 @@ Now we will start to use the replicate information to model variances. We make a
 ```{r} 
 variance <- narrow %>% group_by(Pool, Condition, Mouse, gene) %>% 
   summarise(sd = sd(log_proportion), val1 = log_proportion[1], 
-    val2 = log_proportion[2], meanlog_proportion = mean(log_proportion))
+    val2 = log_proportion[2], mean_log_proportion = mean(log_proportion))
 ```
 
 
 ...and work out how well they correlate for each sample to make a plot:
 
 ```{r} 
-cors<-variance %>% group_by(Condition,Mouse,Pool) %>% summarise( cor=cor(val1,val2),n=n())
-ggplot(variance,aes(x=val1,y=val2,color=Condition,group=Condition))+
-  geom_rect(data=cors,xmin= -50,xmax=50,ymin= -50,ymax=50,aes(fill=-cor,x=0,y=0))+
-  geom_point(alpha=0.4,size=0.1)+facet_grid(Pool~Condition+Mouse)+scale_fill_distiller(palette="Greys")+theme( panel.background = element_rect(fill="white")) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+scale_color_brewer(palette="Set1")+
-  theme(axis.title=element_blank(),
-        axis.text=element_blank(),
-        axis.ticks=element_blank())
-ggsave("output/corplot.pdf",width=10,height=15)
+cors <- variance %>% group_by(Condition, Mouse, Pool) %>% summarise(cor = cor(val1, 
+  val2), n = n())
+ggplot(variance, aes(x = val1, y = val2, color = Condition, group = Condition)) + 
+  geom_rect(data = cors, xmin = -50, xmax = 50, ymin = -50, 
+    ymax = 50, aes(fill = -cor, x = 0, y = 0)) + geom_point(alpha = 0.4, 
+  size = 0.1) + facet_grid(Pool ~ Condition + Mouse) + scale_fill_distiller(palette = "Greys") + 
+  theme(panel.background = element_rect(fill = "white")) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+  scale_color_brewer(palette = "Set1") + theme(axis.title = element_blank(), 
+  axis.text = element_blank(), axis.ticks = element_blank())
+ggsave("output/corplot.pdf", width = 10, height = 15)
 ```
 
-```{r, eval=F}
 
-  pairwiseCor <- function(dataframe){
-  pairs <- combn(names(dataframe), 2, simplify=FALSE)
-  df <- data.frame(Vairable1=rep(0,length(pairs)), Variable2=rep(0,length(pairs)), 
-                   AbsCor=rep(0,length(pairs)), Cor=rep(0,length(pairs)))
-  for(i in 1:length(pairs)){
-    df[i,1] <- pairs[[i]][1]
-    df[i,2] <- pairs[[i]][2]
-    df[i,3] <- round(abs(cor(dataframe[,pairs[[i]][1]], dataframe[,pairs[[i]][2]])),4)
-    df[i,4] <- round(cor(dataframe[,pairs[[i]][1]], dataframe[,pairs[[i]][2]]),4)
-  }
-  pairwiseCorDF <- df
-  pairwiseCorDF <- pairwiseCorDF[order(pairwiseCorDF$AbsCor, decreasing=TRUE),]
-  row.names(pairwiseCorDF) <- 1:length(pairs)
-  pairwiseCorDF <<- pairwiseCorDF
-  pairwiseCorDF
-  }
-
-new<-narrow %>% unite(sample, Pool,Mouse,Condition,Replicate)  %>% select(-Run,-X8,-value,-proportion)
-new<-new%>% group_by(gene,sample) %>%  dplyr::summarise(log_proportion=mean(log_proportion))
-bla<-spread(new,key=sample,value=log_proportion,fill=-50) %>% ungroup() %>% select(-gene)
-
-
-a<-as.matrix(bla)
-dim(a)
-
-mat<-cor(a,use="complete.obs",method="spearman")
-mat<-rcorr(a)
-cors=melt(mat$r)
-substrRight <- function(x, n){
-  substr(x, nchar(x)-n+1, nchar(x))
-}
-
-library(stringr)
-second<-cors %>% filter(!is.na(value)) %>% group_by(Var1)%>% arrange(-value)  %>% filter(row_number()==2) %>% ungroup() %>% arrange(Var1) %>% filter(substr(Var1,0,7)!=substr(Var2,0,7)) 
-
-other<-cors %>% filter(!is.na(value)) %>% separate(Var1,into=c("Pool1","Mouse1","Condition1","Repeat1"),remove=F)%>% separate(Var2,into=c("Pool2","Mouse2","Condition2","Repeat2"),remove=F) %>% filter(Pool1==Pool2) %>% filter(Var1!=Var2) %>% group_by(Pool1)%>% mutate(rank=rank(value))
-library(viridis)
-ggplot(other,aes(x=Var1,y=Var2,fill=value))+geom_tile()+facet_wrap(~Pool1,scales="free")+scale_fill_viridis()+ theme(axis.text.x = element_text(angle = 90, hjust = 1,vjust=0.5))
-
-ggsave("other.pdf",width=20,height=30)
-```
-Looking at this some of the samples are clearly iffy, so we will exclude them:
-```{r}
-#dat<-read_csv("20536.csv")
-
-```
-```{r}
-ggsave("repeat.pdf",width=10,height=15)
-#variance<-filter(variance, !(Pool=="H" & Mouse==3))
-#variance<-filter(variance, !(Pool=="L" & Mouse==3))
-#variance<-filter(variance, !(Pool=="U" | Pool=="V"))
-#variance<-filter(variance, !(Pool=="W" & Mouse==3))
-#variance<-filter(variance, !(Pool=="Y" & Mouse==3))
-```
 
 So we know that different samples have different measurement precisions. How do we model the precision with which an individual measurement is made?  We have estimates from the standard deviations, calculated from the duplicate PCRs. But these standard deviations are not very accurate measurements of the true precision. They are calculated from only TWO values. Those two values might be very similar by pure chance, indicating high precision wrongly.  But we can use the standard deviations from measurements with similar abundances in the same sample to average out this random noise. That is what we do in the next section. We take a "rolling median" across 11 values, after ordering each sample by abundance. Then we enforce monotonicity.
 ```{r}
-variance<-variance %>% group_by(Pool,Condition,Mouse) %>% arrange(-meanlog_proportion) %>% mutate(medsd=rollmean(x=sd,k=11, fill="extend"))
-variance<- variance %>% mutate(monotonicmedsd=cummax(medsd))
-variance<-inner_join(variance,NewInput)
+variance <- variance %>% group_by(Pool, Condition, Mouse) %>% 
+  arrange(-mean_log_proportion) %>% mutate(rm_sd = rollmean(x = sd, 
+  k = 11, fill = "extend"))
+variance <- variance %>% mutate(monotonic_rm_sd = cummax(rm_sd))
+variance <- inner_join(variance, NewInput)
 ```
 Let's see what these variance plots look like:
 ```{r}
-ggplot(variance,aes(x=meanlog_proportion,y=monotonicmedsd,color=Condition))+
-  geom_line()+facet_grid(Pool~Condition+Mouse)+theme( panel.background = element_rect(fill="white")) + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+scale_color_brewer(palette="Set1")+
-  theme(axis.title=element_blank(),
-        axis.text=element_blank(),
-        axis.ticks=element_blank())+guides(color=F)
+ggplot(variance, aes(x = mean_log_proportion, y = monotonic_rm_sd, 
+  color = Condition)) + geom_line() + facet_grid(Pool ~ Condition + 
+  Mouse) + theme(panel.background = element_rect(fill = "white")) + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+  scale_color_brewer(palette = "Set1") + theme(axis.title = element_blank(), 
+  axis.text = element_blank(), axis.ticks = element_blank()) + 
+  guides(color = F)
 ```
 You will notice higher levels for the samples with poor correlations in the previous graph.
 
 Now we want to compare each sample to its previous sample, we define those below.
 ```{r}
-previous=c("Passage","MG","SG")
-names(previous)<-c("MG","SG","Rec")
+previous = c("Passage", "MG", "SG")
+names(previous) <- c("MG", "SG", "Rec")
 previous
 ```
 
 Now we will create a comparison between the next value adn the previous and calculate the difference, and propagate the variance to that measurement of the difference. Because everything is expressed as log-2 a difference of 1 means twice as much and a difference of -1 means half as much.
 
 ```{r}
-variance$previous=previous[as.character(variance$Condition)]
-comparison<-inner_join(ungroup(variance),ungroup(variance),by=c("Mouse","gene","Pool","Condition"="previous"))
+variance$previous = previous[as.character(variance$Condition)]
+comparison <- inner_join(ungroup(variance), ungroup(variance), 
+  by = c("Mouse", "gene", "Pool", Condition = "previous"))
 
-comparison<- comparison %>% mutate(difference=meanlog_proportion.y-meanlog_proportion.x)
-comparison<- comparison %>% mutate(differencesd=sqrt(monotonicmedsd.y^2+monotonicmedsd.x^2))
+comparison <- comparison %>% mutate(difference = mean_log_proportion.y - 
+  mean_log_proportion.x)
+comparison <- comparison %>% mutate(differencesd = sqrt(monotonic_rm_sd.y^2 + 
+  monotonic_rm_sd.x^2))
 
-comparison<- comparison %>% mutate(Condition=Condition.y)
+comparison <- comparison %>% mutate(Condition = Condition.y)
 ```
 
 At this point we have many measurements of the difference, coming from different mice (and possibly different experiments). We could just take the mean of those values, but it turns out we can do better. We have measurements of the predicted precision with which we have measured each of the differences. We can weight the mean to prioritise the values we think we have measured most accurately. This is the Gaussian mean and the function below defines it. The function calculates both the Gaussian mean and the variance with which we have measured it (it propagates the uncertainty).
 ```{r}
-gaussianMeanAndVarianceSplit<- function(vals, variances,return){
-  df<-data.frame(value=vals,variance=variances)
-  df<-df[complete.cases(df),]
+InverseVarianceWeightedMeanAndVarianceSplit <- function(vals, 
+  variances, return) {
+  df <- data.frame(value = vals, variance = variances)
+  df <- df[complete.cases(df), ]
   
-  vals=df$value 
-  variances=df$variance
-  if(length(vals)==1){
-    var<-variances[1]
-    mean<-vals[1]
-  }
-  else{
+  vals = df$value
+  variances = df$variance
+  if (length(vals) == 1) {
+    var <- variances[1]
+    mean <- vals[1]
+  } else {
     
-    precs=1/variances
+    precs = 1/variances
     
-    mean=sum(vals*precs)/sum(precs)
-    var1=(1/sum(precs))*(1/(length(vals)-1))*sum((vals-mean)**2/variances)
-    var2=1/sum(precs) 
-    if(is.na(var1)){var1<-0}
-    var<-max(var1,var2)
+    mean = sum(vals * precs)/sum(precs)
+    # We define two methods of calculating this and choose the larger to be conservative:
+    var1 = (1/sum(precs)) * (1/(length(vals) - 1)) * sum((vals - 
+      mean)^2/variances)
+    var2 = 1/sum(precs)
+    if (is.na(var1)) {
+      var1 <- 0
+    }
+    var <- max(var1, var2)
   }
-  if (return=="mean"){
+  if (return == "mean") {
     return(mean)
   }
-  if (return=="variance"){
+  if (return == "variance") {
     return(var)
   }
 }
 ```
 
 
-```{r}
-
-```
-There are a few possible ways to normalise.
+We can normalise by assuming the least-reduced genes in each transition represent wildtype.
 ```{r, eval=T}
-normaliseWithRedundantControls <- function(unnormaliseddf){
-controlgenes=c("PBANKA_051490","PBANKA_051500","PBANKA_103780","p230p-tag")
-controls <- unnormaliseddf %>% group_by(Pool,Mouse,Condition) %>% filter(gene %in% controlgenes)
-controlsunified <-  controls %>% summarise(difference=gaussianMeanAndVarianceSplit(difference,differencesd^2,"mean"),differencesd=sqrt(gaussianMeanAndVarianceSplit(difference,differencesd^2,"variance")))
-
-normalise<-inner_join(comparison,controlsunified,by=c("Pool","Condition","Mouse"))
-normalise<-normalise %>% mutate(difference=difference.x-difference.y, differencesd=differencesd.x+differencesd.y) %>% select(Pool,Condition,Mouse,gene,difference,differencesd)
-comparisonmerge<- normalise %>% group_by(Pool,Condition,gene) %>% summarise(difference=gaussianMeanAndVarianceSplit(difference,differencesd^2,"mean"),differencesd=sqrt(gaussianMeanAndVarianceSplit(difference,differencesd^2,"variance")))
-return(comparisonmerge)
-}
-```
-Alternative approach: find most abundant
-```{r, eval=T}
-normaliseWithMostAbundantQuarter <- function(unnormaliseddf){
-comparison<- unnormaliseddf %>% mutate(diffmax=difference+2*differencesd)
-comparison<- comparison%>% mutate(diffmin=difference-2*differencesd)
-norms<-comparison %>% group_by(Pool,Condition,Mouse) %>% arrange(-diffmin) %>% mutate(order = row_number()) %>%filter(order<n()/4) %>%  summarise(difference=gaussianMeanAndVarianceSplit(difference,differencesd^2,"mean"),differencesd=sqrt(gaussianMeanAndVarianceSplit(difference,differencesd^2,"variance")))
-norms
-comparison2<-inner_join(comparison,norms,suffix=c("","norm"),by=c("Pool","Condition","Mouse"))
-comparison2<-mutate(comparison2,difference=difference-differencenorm,differencesd=differencesd+differencesdnorm)
-
-return(comparison2)
+normaliseWithLeastReducedQuarter <- function(unnormaliseddf) {
+  comparison <- unnormaliseddf %>% mutate(diffmax = difference + 
+    2 * differencesd)
+  comparison <- comparison %>% mutate(diffmin = difference - 
+    2 * differencesd)
+  norms <- comparison %>% group_by(Pool, Condition, Mouse) %>% 
+    arrange(-diffmin) %>% mutate(order = row_number()) %>% 
+    filter(order < n()/4) %>% summarise(difference = InverseVarianceWeightedMeanAndVarianceSplit(difference, 
+    differencesd^2, "mean"), differencesd = sqrt(InverseVarianceWeightedMeanAndVarianceSplit(difference, 
+    differencesd^2, "variance")))
+  norms
+  comparison_norm <- inner_join(comparison_norm, norms, suffix = c("", 
+    "norm"), by = c("Pool", "Condition", "Mouse"))
+  comparison_norm <- mutate(comparison_norm, difference = difference - 
+    differencenorm, differencesd = differencesd + differencesdnorm)
+  
+  return(comparison_norm)
 }
 
-normaliseWithMostAbundant20 <- function(unnormaliseddf){
-comparison<- unnormaliseddf %>% mutate(diffmax=difference+2*differencesd)
-comparison<- comparison%>% mutate(diffmin=difference-2*differencesd)
-norms<-comparison %>% group_by(Pool,Condition,Mouse) %>% arrange(-diffmin) %>% mutate(order = row_number()) %>%filter(order<21) %>%  summarise(difference=gaussianMeanAndVarianceSplit(difference,differencesd^2,"mean"),differencesd=sqrt(gaussianMeanAndVarianceSplit(difference,differencesd^2,"variance")))
-norms
-comparison2<-inner_join(comparison,norms,suffix=c("","norm"),by=c("Pool","Condition","Mouse"))
-comparison2<-mutate(comparison2,difference=difference-differencenorm,differencesd=differencesd+differencesdnorm)
-
-return(comparison2)
-}
-
-normaliseWithMostAbundant5 <- function(unnormaliseddf){
-comparison<- unnormaliseddf %>% mutate(diffmax=difference+2*differencesd)
-comparison<- comparison%>% mutate(diffmin=difference-2*differencesd)
-norms<-comparison %>% group_by(Pool,Condition,Mouse) %>% arrange(-diffmin) %>% mutate(order = row_number()) %>%filter(order<5) %>%  summarise(difference=gaussianMeanAndVarianceSplit(difference,differencesd^2,"mean"),differencesd=sqrt(gaussianMeanAndVarianceSplit(difference,differencesd^2,"variance")))
-norms
-comparison2<-inner_join(comparison,norms,suffix=c("","norm"),by=c("Pool","Condition","Mouse"))
-comparison2<-mutate(comparison2,difference=difference-differencenorm,differencesd=differencesd+differencesdnorm)
-
-return(comparison2)
-}
 ```
 Instead we'll proceed with the raw-er data: We calculate a confidence interval for the difference using 2xthe standard deviation on either side. We use the confidence intervals to assign phenotypes. If the minimum value is > -1 then the phenotype is not reduced, otherwise it is either: nopower if the max value is > -1 or reduced if the max value is < -1.
 ```{r}
  mergeMultiples <- function(unmergeddf){
-comparisonmerge<- unmergeddf %>% group_by(Pool,Condition,gene) %>% summarise(difference=gaussianMeanAndVarianceSplit(difference,differencesd^2,"mean"),differencesd=sqrt(gaussianMeanAndVarianceSplit(difference,differencesd^2,"variance")))
+comparisonmerge<- unmergeddf %>% group_by(Pool,Condition,gene) %>% summarise(difference=InverseVarianceWeightedMeanAndVarianceSplit(difference,differencesd^2,"mean"),differencesd=sqrt(InverseVarianceWeightedMeanAndVarianceSplit(difference,differencesd^2,"variance")))
 
 comparisonmerge<- comparisonmerge %>% mutate(p=1-pnorm(0,mean=difference,sd=differencesd))
 comparisonmerge<- comparisonmerge %>% mutate(diffmax=difference+2*differencesd)
@@ -349,19 +279,8 @@ recmerge<- recmerge %>% mutate(power=ifelse(diffmin>-1,"notreduced",ifelse(diffm
 return(recmerge)
 }
 
-unnormalised=comparison %>% bloodStageNormalise() %>% mergeMultiples() %>% mutate(version="unnormalised")
-normalisedControls=comparison  %>% normaliseWithRedundantControls() %>% mergeMultiples() %>% mutate(version="withcontrols") %>% bloodStageNormalise()
-normalisedQuarter=comparison  %>% filter(Condition=="Rec")%>% normaliseWithMostAbundantQuarter() %>% mergeMultiples() %>% mutate(version="withabundant") 
+normalisedQuarter=comparison  %>% filter(Condition=="Rec")%>% normaliseWithLeastReducedQuarter() %>% mergeMultiples() %>% mutate(version="withabundant") 
 
-normalisedQuarterBlood=comparison  %>% filter(Condition=="Rec")%>% normaliseWithMostAbundantQuarter() %>% bloodStageNormalise() %>% mergeMultiples() %>% mutate(version="withabundant") 
-
-normalisedWithFive=comparison %>% bloodStageNormalise() %>% normaliseWithMostAbundant5() %>% mergeMultiples() %>% mutate(version="mostabundant5") 
-normalisedWithTwenty=comparison %>% bloodStageNormalise() %>% normaliseWithMostAbundant20() %>% mergeMultiples() %>% mutate(version="mostabundant20") 
-
-unnormalisedatall=comparison %>% filter(Condition=="Rec") %>% mergeMultiples()
-justnormalisedQuarter=comparison %>% filter(Condition=="Rec") %>% normaliseWithMostAbundantQuarter()%>% mergeMultiples()
-roc1<-rocAnalysis(comparison %>% filter(Condition=="Rec") %>%bloodStageNormalise() %>% mergeMultiples())
-roc2<-rocAnalysis(comparison %>% filter(Condition=="Rec") %>% mergeMultiples())
 ```
 ```{r}
 roc<-read_csv("roc.csv")
